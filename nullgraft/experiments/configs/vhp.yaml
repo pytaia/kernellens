@@ -1,0 +1,35 @@
+# Visible Human (registered pairs from scripts/register_vhp.py):
+#   nullgraft assess --config nullgraft/experiments/configs/vhp.yaml --data OUT_OF_REGISTER --out runs/vhp
+# Check geometry with `nullgraft report CT_DIR` first and set operator.shape accordingly.
+seed: 0
+n_jobs: 4
+operator:
+  shape: [512, 512]
+  n_angles: 120
+  beam: fan
+  backend: auto
+  matrix_budget_mb: 2048
+noise:
+  sigma: 2.0e-3
+  eps_factor: 1.5
+decoder:
+  type: tv-admm
+  lam: 1.0e-4
+  n_iter: 60
+data:
+  kind: vhp_registered
+  block_size: 100       # ~10 cm blocks; slices within a block never cross the split
+  test_fraction: 0.2
+  gap: 10
+assess:
+  n_noise: 20
+  region_radius: 16
+  source_offset: 40
+feasible:
+  patch_size: 32
+  stride: 16
+  pool: [4, 8]
+  n_components: 48
+similar:
+  patch_size: 32
+  stride: 16

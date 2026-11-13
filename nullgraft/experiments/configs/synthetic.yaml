@@ -1,0 +1,44 @@
+# Synthetic sanity run (no dataset needed):
+#   nullgraft assess   --config nullgraft/experiments/configs/synthetic.yaml --out runs/syn
+#   nullgraft feasible --config nullgraft/experiments/configs/synthetic.yaml --out runs/syn
+#   nullgraft similar  --config nullgraft/experiments/configs/synthetic.yaml --out runs/syn
+seed: 0
+n_jobs: 1
+operator:
+  shape: [96, 96]
+  n_angles: 30          # sparse view -> non-trivial kernel
+  beam: parallel
+  backend: auto         # astra if installed, else exact-adjoint pixel projector
+noise:
+  sigma: 1.0e-3
+  eps_factor: 1.5
+decoder:
+  type: sart
+  n_iter: 300
+  nonneg: false
+data:
+  kind: synthetic
+  n_slices: 40
+  size: 96
+  block_size: 10        # split by blocks of slices, never by single slices
+  test_fraction: 0.25
+  gap: 1
+assess:
+  n_noise: 20
+  region_radius: 10
+  source_offset: 7
+  n_calibration: 3
+feasible:
+  patch_size: 24
+  stride: 12
+  pool: [2, 4]
+  n_queries: 20
+similar:
+  patch_size: 24
+  stride: 12
+  k: 10
+benchmark:
+  shape: 128
+  n_angles: 60
+  sizes: [1000, 10000, 100000]
+  max_seconds: {forward: 5.0, detail_check: 120.0}

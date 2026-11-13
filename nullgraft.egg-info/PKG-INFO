@@ -1,0 +1,25 @@
+Metadata-Version: 2.4
+Name: nullgraft
+Version: 0.1.0
+Summary: Provable hallucination assessment for CT reconstruction (null-space detail grafting, feasible-set diameters)
+Requires-Python: >=3.11
+Requires-Dist: numpy>=1.26
+Requires-Dist: scipy>=1.11
+Requires-Dist: scikit-image>=0.22
+Requires-Dist: pyyaml>=6
+Requires-Dist: joblib>=1.3
+Provides-Extra: astra
+Requires-Dist: astra-toolbox; extra == "astra"
+Provides-Extra: torch
+Requires-Dist: torch>=2.1; extra == "torch"
+Provides-Extra: faiss
+Requires-Dist: faiss-cpu; extra == "faiss"
+Provides-Extra: registration
+Requires-Dist: SimpleITK>=2.3; extra == "registration"
+Provides-Extra: dicom
+Requires-Dist: pydicom>=2.4; extra == "dicom"
+Provides-Extra: parquet
+Requires-Dist: pyarrow>=14; extra == "parquet"
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: pytest-cov; extra == "dev"

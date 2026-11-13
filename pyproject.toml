@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nullgraft"
+version = "0.1.0"
+description = "Provable hallucination assessment for CT reconstruction (null-space detail grafting, feasible-set diameters)"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "scikit-image>=0.22",
+    "pyyaml>=6",
+    "joblib>=1.3",
+]
+
+[project.optional-dependencies]
+astra = ["astra-toolbox"]
+torch = ["torch>=2.1"]
+faiss = ["faiss-cpu"]
+registration = ["SimpleITK>=2.3"]
+dicom = ["pydicom>=2.4"]
+parquet = ["pyarrow>=14"]
+dev = ["pytest>=8", "pytest-cov"]
+
+[project.scripts]
+nullgraft = "nullgraft.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["nullgraft*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: long-running tests",
+    "perf: performance regression tests",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
