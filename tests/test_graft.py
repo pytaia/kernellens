@@ -53,6 +53,19 @@ def test_pure_kernel_detail_leaves_measurement_unchanged(rng: np.random.Generato
     assert g.valid and g.delta < 1e-3 * g.delta_limit / 0.5
 
 
+def test_local_projection_stays_in_region_and_kernel(rng: np.random.Generator) -> None:
+    op = make_operator((48, 48), n_angles=8, backend="pixel")
+    region = disk((48, 48), (24, 24), 12).astype(bool)
+    z = np.zeros((48, 48), np.float32)
+    detail = (rng.standard_normal((48, 48)) * region).astype(np.float32)
+    g = Grafter(op, window_width=0, projection="local").graft(z, z + detail, region, eps=1.0)
+    assert not g.x_proj[~region].any()  # локальна
+    assert g.delta < 1e-3 * np.linalg.norm(op.forward(detail))  # в ядре
+    assert np.abs(g.x_proj).sum() > 0.1 * np.abs(detail).sum()  # при 8 проекциях часть детали невидима
+    glob = Grafter(op, window_width=0).graft(z, z + detail, region, eps=1.0)
+    assert np.abs(glob.x_proj[~region]).max() > 1e-3  # глобальная проекция размазана за пределы R
+
+
 def test_large_detail_in_sparse_view_invalidates_blend() -> None:
     op = make_operator((48, 48), n_angles=8, backend="pixel")
     region = disk((48, 48), (24, 24), 12).astype(bool)

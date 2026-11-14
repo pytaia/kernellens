@@ -1,0 +1,27 @@
+ui: qt
+synthetic:
+  size: 128
+  n_slices: 24
+pixel_mm: 1.0
+mu_water: 0.0192
+arb_water: 0.2         # «вода» для условных HU, когда данные не в единицах ослабления
+cache_dir: ""          # пусто: <домашний каталог>/.cache/nullgraft_demo
+realism_check: true   # проверка реалистичности x'' по другим срезам архива
+history: 50
+redraw_ms: 30
+recon:
+  n_angles: 60
+  beam: parallel
+  sigma: 0.001
+  eps: 0.0             # 0: ε = eps_factor·σ·√n_rays
+  eps_factor: 1.5
+  decoder: cgls        # согласован (‖Az − y‖ < ε) при умеренном числе итераций; SART требует тысяч
+  decoder_iters: 250
+  n_noise: 20
+  seed: 0
+candidates:
+  k: 5
+  radius: 6
+workers:
+  threads: 2
+  processes: 0

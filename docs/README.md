@@ -16,6 +16,8 @@ Fundamental Limits and Provable Assessment Methods* (arXiv:2605.13146, 2026) д�
 | [06_decoders.md](06_decoders.md) | Декодеры: FBP, SART, TV-ADMM, стохастические и нейросетевые |
 | [07_metrics.md](07_metrics.md) | Локализованная норма $\lVert\cdot\rVert_{p,q,R}$ и вспомогательные метрики |
 | [08_data.md](08_data.md) | Visible Human Project, регистрация, разбиения, синтетика |
+| [09_visualization.md](09_visualization.md) | Демо-приложение: окно, выбор области, стадии, графики и как их читать, экспорт |
+| [10_performance.md](10_performance.md) | Где тратится время, кэши, ускорения (A_R, линейные декодеры), замеры |
 
 ## Обозначения
 

@@ -97,21 +97,28 @@ class Grafter:
         window: WindowKind = "cosine",
         window_width: float = 3.0,
         delta_factor: float = 0.5,
+        projection: Literal["global", "local"] = "global",
     ) -> None:
         self.op = op
         self.projector = projector or NullspaceProjector(op)
         self.window = window
         self.window_width = window_width
         self.delta_factor = delta_factor
+        self.projection = projection
 
     def graft(self, z: NDArray, source: NDArray, region: NDArray[np.bool_], eps: float) -> GraftResult:
         region = np.asarray(region, dtype=bool)
         z32 = np.asarray(z, dtype=np.float32)
         x_det = extract_detail(z32, source, region)
-        proj = self.projector.project(x_det, support=region)
-        logger.info("graft: ||A x_proj||/||A x_det|| = %.3e", proj.residual_ratio)
         alpha = blend_window(region, self.window_width, self.window)
-        blended = (alpha * proj.x_proj).astype(np.float32)
+        if self.projection == "local":
+            # окно до проекции: результат остаётся в ядре и с носителем в R (после — вышел бы из ядра)
+            proj = self.projector.project_local(alpha * x_det, region)
+            blended = proj.x_proj.astype(np.float32)
+        else:
+            proj = self.projector.project(x_det, support=region)
+            blended = (alpha * proj.x_proj).astype(np.float32)
+        logger.info("graft: ||A x_proj||/||A x_det|| = %.3e", proj.residual_ratio)
         support = np.abs(blended) > 0
         delta = float(np.linalg.norm(self.op.forward(blended, support=support))) if support.any() else 0.0
         limit = self.delta_factor * float(eps)

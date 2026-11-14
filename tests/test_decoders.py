@@ -44,6 +44,31 @@ def test_iterative_decoders_beat_fbp_in_sparse_view(phantom: np.ndarray) -> None
     assert e_tv < e_fbp
 
 
+def test_cgls_matches_lsqr_and_is_consistent(phantom: np.ndarray) -> None:
+    from scipy.sparse.linalg import lsqr
+
+    from nullgraft.decoders import CGLS
+
+    op = make_operator((64, 64), n_angles=30, backend="pixel")
+    y = op.forward(phantom) + (1e-3 * np.random.default_rng(0).standard_normal(op.sino_shape)).astype(np.float32)
+    lin = op.as_linear_operator()
+    early = CGLS(op, n_iter=5).reconstruct(y)[0]
+    ref5 = lsqr(lin, y.ravel().astype(np.float64), iter_lim=5, atol=0, btol=0)[0]
+    np.testing.assert_allclose(early.ravel(), ref5, rtol=1e-3, atol=1e-5)
+    # дальше округления разводят методы по компонентам с малыми σ: сравниваем невязки в данных
+    z = CGLS(op, n_iter=40).reconstruct(y)[0]
+    ref = lsqr(lin, y.ravel().astype(np.float64), iter_lim=40, atol=0, btol=0)[0].reshape(64, 64)
+    res_cgls = np.linalg.norm(op.forward(z) - y)
+    res_lsqr = np.linalg.norm(op.forward(ref) - y)
+    assert res_cgls == pytest.approx(res_lsqr, rel=0.05)
+    batch = CGLS(op, n_iter=40).reconstruct_batch(np.stack([y, 2 * y]))
+    np.testing.assert_allclose(batch[1, 0], 2 * batch[0, 0], rtol=1e-4, atol=1e-5)  # линейность
+    from nullgraft.api import default_eps
+
+    z_full = CGLS(op, n_iter=250).reconstruct(y)[0]
+    assert np.linalg.norm(op.forward(z_full) - y) < default_eps(op, 1e-3)  # согласован в смысле Def. 2.1
+
+
 def test_batch_reconstruction_equals_single(phantom: np.ndarray, rng: np.random.Generator) -> None:
     op = make_operator((64, 64), n_angles=40, backend="pixel")
     y = op.forward(phantom)

@@ -1,2 +1,3 @@
 [console_scripts]
 nullgraft = nullgraft.cli:main
+nullgraft-demo = nullgraft_demo.__main__:main

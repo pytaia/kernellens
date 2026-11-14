@@ -23,3 +23,7 @@ Requires-Dist: pyarrow>=14; extra == "parquet"
 Provides-Extra: dev
 Requires-Dist: pytest>=8; extra == "dev"
 Requires-Dist: pytest-cov; extra == "dev"
+Provides-Extra: demo
+Requires-Dist: PyQt6>=6.5; extra == "demo"
+Requires-Dist: matplotlib>=3.8; extra == "demo"
+Requires-Dist: python-docx>=1.1; extra == "demo"

@@ -30,6 +30,11 @@ class Decoder(ABC):
     n_samples: int = 1
 
     @property
+    def linear(self) -> bool:
+        """Линейно ли отображение y ↦ φ(y) (тогда φ(y + e) = φ(y) + φ(e))."""
+        return False
+
+    @property
     def stochastic(self) -> bool:
         return self.n_samples > 1
 
@@ -106,6 +111,10 @@ class FBP(_DeterministicDecoder):
         spec = np.fft.rfft(g, n=size, axis=-1) * self._response
         return np.fft.irfft(spec, n=size, axis=-1)[..., : g.shape[-1]]
 
+    @property
+    def linear(self) -> bool:
+        return not self.nonneg
+
     def _solve(self, ys: NDArray[np.float32]) -> NDArray:
         x = self.op.fbp_backproject(self.filter(ys)) * self._scale
         return np.maximum(x, 0) if self.nonneg else x
@@ -124,6 +133,10 @@ class SART(_DeterministicDecoder):
         self._r = np.divide(1.0, row, out=np.zeros_like(row), where=row > 1e-8)
         self._c = np.divide(1.0, col, out=np.zeros_like(col), where=col > 1e-8)
 
+    @property
+    def linear(self) -> bool:
+        return not self.nonneg
+
     def _solve(self, ys: NDArray[np.float32]) -> NDArray:
         x = np.zeros((ys.shape[0], *self.op.image_shape))
         for _ in range(self.n_iter):
@@ -131,6 +144,44 @@ class SART(_DeterministicDecoder):
             x = x + self.relaxation * self._c * self.op.adjoint(resid)
             if self.nonneg:
                 x = np.maximum(x, 0.0)
+        return x
+
+
+class CGLS(_DeterministicDecoder):
+    """Сопряжённые градиенты на ``AᵀA x = Aᵀy`` из нуля (эквивалент LSQR), батчево; ранняя остановка — регуляризация."""
+
+    def __init__(self, op: RadonOperator, n_iter: int = 250) -> None:
+        self.op = op
+        self.n_iter = n_iter
+
+    def _solve(self, ys: NDArray[np.float32]) -> NDArray:
+        axes = (-2, -1)
+        batch = ys.shape[0]
+        backend = self.op.backend
+
+        # рекуррентные коэффициенты CG чувствительны к округлению: всё в float64, мимо float32-обёрток
+        def fwd(v: NDArray) -> NDArray:
+            return backend.forward(v.reshape(batch, -1), None).reshape(batch, *self.op.sino_shape)
+
+        def adj(v: NDArray) -> NDArray:
+            return backend.adjoint(v.reshape(batch, -1)).reshape(batch, *self.op.image_shape)
+
+        r = np.asarray(ys, np.float64)
+        x = np.zeros((batch, *self.op.image_shape))
+        s = adj(r)
+        p = s.copy()
+        gamma = np.sum(s * s, axis=axes, keepdims=True)
+        for _ in range(self.n_iter):
+            q = fwd(p)
+            qq = np.sum(q * q, axis=axes, keepdims=True)
+            alpha = np.divide(gamma, qq, out=np.zeros_like(gamma), where=qq > 0)
+            x = x + alpha * p
+            r = r - alpha * q
+            s = adj(r)
+            gamma_new = np.sum(s * s, axis=axes, keepdims=True)
+            beta = np.divide(gamma_new, gamma, out=np.zeros_like(gamma), where=gamma > 0)
+            p = s + beta * p
+            gamma = gamma_new
         return x
 
 
@@ -294,6 +345,8 @@ def build_decoder(cfg: Mapping[str, Any], op: RadonOperator) -> Decoder:
         return FBP(op, **params)
     if kind == "sart":
         return SART(op, **params)
+    if kind == "cgls":
+        return CGLS(op, **params)
     if kind in ("tv", "tv-admm", "tv_admm"):
         return TVADMM(op, **params)
     if kind == "perturbed":

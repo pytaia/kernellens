@@ -465,6 +465,17 @@ class RadonOperator:
         backend = self._backend
         idx = None if support is None else np.flatnonzero(np.asarray(support, dtype=bool).ravel())
         n_cols = self.shape[1] if idx is None else int(idx.size)
+        matrix = getattr(backend, "_matrix", None)
+        if idx is not None and matrix is not None:
+            # столбцы R вырезаются один раз: A_R в сотни раз разреженнее полного A (профиль: 512², LSQR на R)
+            sub = matrix.tocsc()[:, idx].tocsr()
+            sub_t = sub.T.tocsr()
+            return LinearOperator(
+                shape=(self.shape[0], n_cols), matvec=lambda v: sub @ np.asarray(v, np.float64).ravel(),
+                rmatvec=lambda s: sub_t @ np.asarray(s, np.float64).ravel(),
+                matmat=lambda vs: sub @ np.asarray(vs, np.float64), rmatmat=lambda ss: sub_t @ np.asarray(ss, np.float64),
+                dtype=np.float64,
+            )
 
         def _restrict(img: NDArray) -> NDArray:
             return img if idx is None else img[..., idx]

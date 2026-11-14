@@ -18,7 +18,7 @@ from nullgraft.assess import (
     sample_noise,
     select_point,
 )
-from nullgraft.decoders import SART, PerturbedDecoder
+from nullgraft.decoders import FBP, SART, PerturbedDecoder
 from nullgraft.nullspace import local_kernel_element
 from nullgraft.operators import RadonOperator, make_operator
 from tests.conftest import disk
@@ -135,6 +135,28 @@ def test_stochastic_decoder_uses_hausdorff_and_is_deterministic(sparse: Scenario
         sparse.y, _kernel_source(sparse), sparse.region) for _ in range(2)]
     assert runs[0].outcome is runs[1].outcome
     assert runs[0].d_to_z == runs[1].d_to_z and runs[0].eta_min == runs[1].eta_min
+
+
+@pytest.mark.parametrize("make", [lambda op: FBP(op, window="hann"), lambda op: SART(op, n_iter=30, nonneg=False)])
+def test_linear_fast_path_matches_direct_decoding(sparse: Scenario, make) -> None:
+    from nullgraft import assess as assess_mod
+
+    dec = make(sparse.op)
+    assert dec.linear
+    cfg = AssessmentConfig(eps=sparse.eps * 50, n_noise=6, noise_sigma=SIGMA * 20, batch_size=4, seed=3)
+    fast = DetailAssessor(sparse.op, dec, cfg, realism=AlwaysRealistic()).assess(
+        sparse.y, _kernel_source(sparse), sparse.region, z=sparse.z)
+    dec.__class__.linear = property(lambda self: False)  # прямой путь для сравнения
+    try:
+        assess_mod._RESPONSE_CACHE.clear()
+        slow = DetailAssessor(sparse.op, dec, cfg, realism=AlwaysRealistic()).assess(
+            sparse.y, _kernel_source(sparse), sparse.region, z=sparse.z)
+    finally:
+        del dec.__class__.linear
+    assert fast.outcome is slow.outcome
+    np.testing.assert_allclose(fast.d_to_z, slow.d_to_z, rtol=1e-3, atol=1e-6)
+    np.testing.assert_allclose(fast.d_to_graft, slow.d_to_graft, rtol=1e-3, atol=1e-6)
+    assert fast.consistent_output_fraction == slow.consistent_output_fraction
 
 
 def test_archive_patch_realism() -> None:

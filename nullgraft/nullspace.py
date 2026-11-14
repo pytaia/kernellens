@@ -122,6 +122,35 @@ class NullspaceProjector:
         return ProjectionResult(result.x_proj.copy(), result.pinv_component.copy(), result.residual_ratio,
                                 result.iterations, result.istop, from_cache=False)
 
+    def project_local(self, x: NDArray, support: NDArray[np.bool_]) -> ProjectionResult:
+        """Проекция на ``ker(A) ∩ {supp ⊂ R}``: ``x − A_R⁺ A_R x`` по столбцам ``R`` (результат локален)."""
+        x32 = np.asarray(x, dtype=np.float32)
+        support = np.asarray(support, dtype=bool)
+        key = "local:" + self._key(x32, support)
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            c = self._cache[key]
+            return ProjectionResult(c.x_proj.copy(), c.pinv_component.copy(), c.residual_ratio, c.iterations,
+                                    c.istop, from_cache=True)
+        vals = x32[support].astype(np.float64)
+        lin = self.op.as_linear_operator(support=support)
+        b = lin.matvec(vals)
+        b_norm = float(np.linalg.norm(b))
+        if b_norm == 0.0:
+            result = ProjectionResult(x32.copy(), np.zeros_like(x32), 0.0, 0, -1, from_cache=False)
+        else:
+            cfg = self.config
+            out = lsqr(lin, b, atol=cfg.atol, btol=cfg.btol, iter_lim=cfg.iter_lim)
+            w = np.zeros(x32.shape)
+            w[support] = out[0]
+            x_proj = (x32 - w).astype(np.float32)
+            ratio = float(np.linalg.norm(self.op.forward(x_proj, support=support))) / b_norm
+            logger.info("P_N,R: ||A x_proj||/||A x|| = %.3e after %d LSQR iterations", ratio, int(out[2]))
+            result = ProjectionResult(x_proj, w.astype(np.float32), ratio, int(out[2]), int(out[1]), from_cache=False)
+        self._store(key, result)
+        return ProjectionResult(result.x_proj.copy(), result.pinv_component.copy(), result.residual_ratio,
+                                result.iterations, result.istop, from_cache=False)
+
     def _store(self, key: str, result: ProjectionResult) -> None:
         if self.cache_size <= 0:
             return

@@ -23,12 +23,17 @@ registration = ["SimpleITK>=2.3"]
 dicom = ["pydicom>=2.4"]
 parquet = ["pyarrow>=14"]
 dev = ["pytest>=8", "pytest-cov"]
+demo = ["PyQt6>=6.5", "matplotlib>=3.8", "python-docx>=1.1"]
 
 [project.scripts]
 nullgraft = "nullgraft.cli:main"
+nullgraft-demo = "nullgraft_demo.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["nullgraft*"]
+
+[tool.setuptools.package-data]
+nullgraft_demo = ["default.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

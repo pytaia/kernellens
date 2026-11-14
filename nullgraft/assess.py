@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol
+from collections.abc import Callable
+from typing import Any, Protocol
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -28,6 +30,12 @@ logger = logging.getLogger(__name__)
 _NOISE_RADIUS_FRACTION = 0.99
 _LSQR_ITER_LIMIT = 7
 _KERNEL_RATIO_WARN = 1e-2
+
+StageCallback = Callable[[str, dict[str, Any]], None]
+
+
+def _no_stage(_name: str, _data: dict[str, Any]) -> None:
+    return None
 
 
 class Outcome(str, Enum):
@@ -136,6 +144,7 @@ class AssessmentConfig:
     null_threshold: float = 0.0
     run_decoder_if_unrealistic: bool = False
     seed: int = 0
+    batch_size: int = 0
 
 
 @dataclass(frozen=True)
@@ -158,6 +167,7 @@ class Assessment:
     d_to_graft: tuple[float, ...] = ()
     consistent_output_fraction: float = float("nan")
     notes: tuple[str, ...] = field(default_factory=tuple)
+    extras: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def interval_nonempty(self) -> bool:
@@ -180,15 +190,51 @@ def select_point(samples: NDArray) -> NDArray[np.float32]:
     return samples[int(np.argmin(np.linalg.norm((samples - mean).reshape(len(samples), -1), axis=1)))]
 
 
-def sample_noise(shape: tuple[int, ...], n: int, sigma: float, eps: float, rng: np.random.Generator) -> NDArray:
-    """``n`` гауссовых реализаций шума, радиально ужатых до ``‖e‖ < eps``."""
+def _noise_parts(shape: tuple[int, ...], n: int, sigma: float, eps: float,
+                 rng: np.random.Generator) -> tuple[NDArray, NDArray]:
+    """Сырые гауссовы реализации и множители радиального ужатия в шар ``‖e‖ < eps``."""
     noise = sigma * rng.standard_normal((n, *shape))
     norms = np.linalg.norm(noise.reshape(n, -1), axis=1)
     limit = _NOISE_RADIUS_FRACTION * eps
     factor = np.where(norms > limit, limit / np.maximum(norms, 1e-300), 1.0)
     if np.any(factor < 1.0):
         logger.debug("shrunk %d/%d noise draws into the eps-ball", int(np.sum(factor < 1.0)), n)
+    return noise, factor
+
+
+def sample_noise(shape: tuple[int, ...], n: int, sigma: float, eps: float, rng: np.random.Generator) -> NDArray:
+    """``n`` гауссовых реализаций шума, радиально ужатых до ``‖e‖ < eps``."""
+    noise, factor = _noise_parts(shape, n, sigma, eps, rng)
     return (noise * factor.reshape(n, *([1] * len(shape)))).astype(np.float32)
+
+
+_RESPONSE_CACHE: OrderedDict = OrderedDict()
+_RESPONSE_CACHE_SIZE = 4
+
+
+def _decoder_key(decoder: Decoder) -> tuple:
+    scalars = tuple(sorted((k, v) for k, v in vars(decoder).items() if isinstance(v, (int, float, str, bool))))
+    return (type(decoder).__name__, scalars)
+
+
+def _noise_responses(decoder: Decoder, op: RadonOperator, raw: NDArray, cfg: AssessmentConfig,
+                     emit: StageCallback) -> NDArray:
+    """``φ(g_m)`` для сырых реализаций шума; один раз на (декодер, геометрия, σ, seed, M)."""
+    key = (_decoder_key(decoder), op.fingerprint(), cfg.noise_sigma, cfg.seed, raw.shape)
+    if key in _RESPONSE_CACHE:
+        _RESPONSE_CACHE.move_to_end(key)
+        return _RESPONSE_CACHE[key]
+    total = raw.shape[0]
+    step = cfg.batch_size if cfg.batch_size > 0 else total
+    parts = []
+    for start in range(0, total, step):
+        parts.append(decoder.reconstruct_batch(raw[start : start + step].astype(np.float32))[:, 0])
+        emit("decoder-noise", {"done": min(start + step, total), "total": total})
+    out = np.concatenate(parts).astype(np.float32)
+    _RESPONSE_CACHE[key] = out
+    while len(_RESPONSE_CACHE) > _RESPONSE_CACHE_SIZE:
+        _RESPONSE_CACHE.popitem(last=False)
+    return out
 
 
 class DetailAssessor:
@@ -216,18 +262,42 @@ class DetailAssessor:
     def consistency(self, z: NDArray, y: NDArray) -> float:
         return float(np.linalg.norm(self.op.forward(z) - np.asarray(y, np.float32)))
 
-    def assess(self, y: NDArray, source: NDArray, region: NDArray[np.bool_], z: NDArray | None = None) -> Assessment:
-        """Оценить содержимое ``z`` в ``region`` против альтернативы из ``source``."""
+    def assess(
+        self,
+        y: NDArray,
+        source: NDArray,
+        region: NDArray[np.bool_],
+        z: NDArray | None = None,
+        on_stage: StageCallback | None = None,
+    ) -> Assessment:
+        """Оценить содержимое ``z`` в ``region`` против альтернативы из ``source``.
+
+        ``on_stage(name, data)`` вызывается после стадий ``consistency``, ``projection``, ``blend``,
+        ``decoder`` (по порциям) и ``classify``; исключение из колбэка прерывает проверку.
+        """
+        emit = on_stage or _no_stage
+        result = self._assess(y, source, region, z, emit)
+        emit("classify", {"outcome": result.outcome})
+        return result
+
+    def _assess(
+        self, y: NDArray, source: NDArray, region: NDArray[np.bool_], z: NDArray | None, emit: StageCallback
+    ) -> Assessment:
         cfg = self.config
         region = np.asarray(region, dtype=bool)
         if z is None:
             z = select_point(self.decoder.reconstruct(y))
         resid = self.consistency(z, y)
-        base = {"consistency_residual": resid, "eps": cfg.eps}
+        emit("consistency", {"residual": resid, "eps": cfg.eps, "ok": resid < cfg.eps})
+        base: dict[str, Any] = {"consistency_residual": resid, "eps": cfg.eps}
         if resid >= cfg.eps:
             return Assessment(Outcome.INCONSISTENT, notes=("||A z - y|| >= eps: analysis not applicable",), **base)
 
         g = self.grafter.graft(z, source, region, cfg.eps)
+        emit("projection", {"x_det": g.x_det, "x_proj": g.x_proj, "pinv": g.projection.pinv_component,
+                            "kernel_ratio": g.kernel_ratio})
+        emit("blend", {"x_graft": g.x_graft, "alpha": g.alpha, "delta": g.delta, "delta_limit": g.delta_limit,
+                       "valid": g.valid})
         metric = LocalizedMetric(region, cfg.p, cfg.q)
         graft_size = float(metric.norm(g.blended))
         detail_size = float(metric.norm(g.x_det))
@@ -235,6 +305,7 @@ class DetailAssessor:
         base |= {
             "graft_size": graft_size, "detail_size": detail_size, "projected_size": projected_size,
             "kernel_ratio": g.kernel_ratio, "delta": g.delta, "delta_limit": g.delta_limit,
+            "extras": {"x_det": g.x_det, "x_proj": g.x_proj, "x_graft": g.x_graft},
         }
         notes: list[str] = []
         # остановка по iter_lim — норма; проблема только при большом остаточном отношении
@@ -257,11 +328,12 @@ class DetailAssessor:
         if not verdict.realistic and not cfg.run_decoder_if_unrealistic:
             return Assessment(Outcome.UNINFORMATIVE, notes=tuple(notes + ["x'' is not realistic"]), **base)
 
-        d_z, d_g, consistent = self._decoder_distances(g, z, metric)
+        d_z, d_g, consistent, stats = self._decoder_distances(g, z, metric, emit)
         eta_min, eta_max = float(np.max(d_z)), float(np.min(d_g))
         base |= {
             "eta_min": eta_min, "eta_max": eta_max, "d_to_z": tuple(map(float, d_z)),
             "d_to_graft": tuple(map(float, d_g)), "consistent_output_fraction": consistent,
+            "extras": {**base["extras"], **stats},
         }
         if consistent < 1.0:
             notes.append(f"only {consistent:.0%} of decoder outputs on y'' are eps-consistent")
@@ -274,22 +346,50 @@ class DetailAssessor:
         return Assessment(Outcome.INCONCLUSIVE, notes=tuple(notes), **base)
 
     def _decoder_distances(
-        self, g: GraftResult, z: NDArray, metric: LocalizedMetric
-    ) -> tuple[NDArray, NDArray, float]:
-        """Один батчевый вызов декодера на ``y''_m = A x'' + e_m``."""
+        self, g: GraftResult, z: NDArray, metric: LocalizedMetric, emit: StageCallback = None  # type: ignore[assignment]
+    ) -> tuple[NDArray, NDArray, float, dict[str, NDArray]]:
+        """Декодер на ``y''_m = A x'' + e_m`` батчами по ``batch_size``; среднее и СКО выходов по шумам."""
         cfg = self.config
+        emit = emit or _no_stage
         rng = np.random.default_rng(cfg.seed)
         y_clean = self.op.forward(g.x_graft)
         # ‖e‖ < ε − Δ оставляет z допустимым для каждого y''_m
         radius = max(cfg.eps - g.delta, 0.0)
-        ys = y_clean[None] + sample_noise(y_clean.shape, cfg.n_noise, cfg.noise_sigma, radius, rng)
-        outs = self.decoder.reconstruct_batch(ys)
-        d_z = np.max(metric(outs, np.asarray(z)[None, None]), axis=1)
-        d_g = np.max(metric(outs, g.x_graft[None, None]), axis=1)
-        m, l = outs.shape[:2]
-        flat = outs.reshape(m * l, *outs.shape[2:])
-        resid = np.linalg.norm((self.op.forward(flat) - np.repeat(ys, l, axis=0)).reshape(m * l, -1), axis=1)
-        return d_z, d_g, float(np.mean(resid < cfg.eps))
+        raw, factor = _noise_parts(y_clean.shape, cfg.n_noise, cfg.noise_sigma, radius, rng)
+        ys = y_clean[None] + (raw * factor.reshape(-1, *([1] * y_clean.ndim))).astype(np.float32)
+        total = ys.shape[0]
+        step = cfg.batch_size if cfg.batch_size > 0 else total
+        z_arr = np.asarray(z)[None, None]
+        d_z, d_g, n_ok = [], [], 0
+        s1 = np.zeros(g.x_graft.shape)
+        s2 = np.zeros(g.x_graft.shape)
+        # линейный декодер: φ(y'' + s·g) = φ(y'') + s·φ(g); отклики на шум g считаются один раз и кэшируются
+        fast = self.decoder.linear and self.decoder.n_samples == 1 and total > 0
+        if fast:
+            base = self.decoder.reconstruct(y_clean)[0].astype(np.float64)
+            responses = _noise_responses(self.decoder, self.op, raw, cfg, emit)
+        for start in range(0, total, step):
+            if fast:
+                f = factor[start : start + step].reshape(-1, 1, 1, 1)
+                outs = (base[None, None] + f * responses[start : start + step, None]).astype(np.float32)
+            else:
+                outs = self.decoder.reconstruct_batch(ys[start : start + step])
+            d_z.append(np.max(metric(outs, z_arr), axis=1))
+            d_g.append(np.max(metric(outs, g.x_graft[None, None]), axis=1))
+            m, l = outs.shape[:2]
+            flat = outs.reshape(m * l, *outs.shape[2:])
+            target = np.repeat(ys[start : start + step], l, axis=0)
+            resid = np.linalg.norm((self.op.forward(flat) - target).reshape(m * l, -1), axis=1)
+            n_ok += int(np.sum(resid < cfg.eps))
+            first = outs[:, 0].astype(np.float64)
+            s1 += first.sum(axis=0)
+            s2 += (first**2).sum(axis=0)
+            emit("decoder", {"done": min(start + step, total), "total": total})
+        mean = s1 / total
+        std = np.sqrt(np.maximum(s2 / total - mean**2, 0.0))
+        stats = {"out_mean": mean.astype(np.float32), "out_std": std.astype(np.float32)}
+        n_total = total * (outs.shape[1] if total else 1)
+        return np.concatenate(d_z), np.concatenate(d_g), n_ok / max(n_total, 1), stats
 
 
 @dataclass(frozen=True)
